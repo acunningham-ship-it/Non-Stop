@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment
+.env
+.envrc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLite databases (created at runtime)
+*.db
+*.db-journal
+*.db-wal
+
+# History
+.history
+.aios_history
+.nonstop_history
+
+# Temp
+tmp/
+temp/

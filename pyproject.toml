@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nonstop"
+version = "0.2.0"
+description = "Multi-agent terminal — AI agents that work together in your terminal"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Armani Cunningham"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "prompt-toolkit>=3.0.48",
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/armanicunningham/Non-Stop"
+Source = "https://github.com/armanicunningham/Non-Stop"
+
+[project.scripts]
+nonstop = "nonstop.main:run"
+
+[tool.setuptools.packages.find]
+include = ["nonstop*"]
