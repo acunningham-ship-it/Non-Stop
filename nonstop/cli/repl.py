@@ -40,6 +40,13 @@ except PackageNotFoundError:
 STYLE = Style.from_dict({
     "prompt": "#888888",
     "bottom-toolbar": "noreverse #666666",
+    "completion-menu": "bg:#1a1a1a #cccccc",
+    "completion-menu.completion": "bg:#1a1a1a #cccccc",
+    "completion-menu.completion.current": "bg:#ff8800 #000000 bold",
+    "completion-menu.meta.completion": "bg:#1a1a1a #888888",
+    "completion-menu.meta.completion.current": "bg:#ff8800 #000000",
+    "scrollbar.background": "bg:#1a1a1a",
+    "scrollbar.button": "bg:#444444",
 })
 
 # 256-color palette: readable on dark + light terminals, no near-black/white.
@@ -61,14 +68,18 @@ class CommandCompleter(Completer):
             return
         partial = text[1:].lower()
         for cmd in self.commands._commands.values():
-            for n in [cmd.name] + cmd.aliases:
-                if n.startswith(partial):
-                    yield Completion(
-                        f"/{n}",
-                        start_position=-len(text),
-                        display=f"/{n}",
-                        display_meta=cmd.help_text,
-                    )
+            # Show one row per command (primary name only). Match against
+            # aliases so /q still completes, but display the canonical name.
+            matches_any = any(
+                n.startswith(partial) for n in [cmd.name] + cmd.aliases
+            )
+            if matches_any:
+                yield Completion(
+                    f"/{cmd.name}",
+                    start_position=-len(text),
+                    display=f"/{cmd.name}",
+                    display_meta=cmd.help_text,
+                )
 
 
 class NonStopREPL:
