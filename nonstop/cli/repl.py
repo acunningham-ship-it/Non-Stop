@@ -4,8 +4,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 from collections import defaultdict, deque
 from importlib.metadata import version as _pkg_version, PackageNotFoundError
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -14,9 +16,9 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.key_binding import KeyBindings
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markup import escape
-from rich.columns import Columns
+from rich.panel import Panel
 from rich.text import Text
 from rich import box
 from rich.table import Table
@@ -146,27 +148,34 @@ class NonStopREPL:
 
     # ── Streaming ────────────────────────────────────────────────────
 
+    def _print_agent_header(self, name: str):
+        color = _color_for(name)
+        self.console.print()
+        self.console.print(f"[{color}]⏺[/] [bold {color}]{name}[/]")
+        self.console.print("[dim]  │[/] ", end="")
+
     def _flush_buffer(self, name: str):
         buf = self._stream_buffers.pop(name, [])
         if not buf:
             return
-        color = _color_for(name)
-        # Header for the buffered burst.
-        self.console.print(f"\n[bold {color}]{name}[/]  ", end="")
-        self.console.out("".join(buf), end="", highlight=False)
+        self._print_agent_header(name)
+        # Indent continuation lines so they line up under the │.
+        text = "".join(buf).replace("\n", "\n[dim]  │[/] ")
+        self.console.print(text, end="", highlight=False)
 
     def _on_stream_token(self, name: str, token: str, accumulated: str):
         # If nobody owns the line, this agent takes it.
         if self._stream_owner is None:
             self._stream_owner = name
-            color = _color_for(name)
-            self.console.print(f"\n[bold {color}]{name}[/]  ", end="")
-            self.console.out(token, end="", highlight=False)
+            self._print_agent_header(name)
+            text = token.replace("\n", "\n[dim]  │[/] ")
+            self.console.print(text, end="", highlight=False)
             return
 
         # Same agent continues writing.
         if self._stream_owner == name:
-            self.console.out(token, end="", highlight=False)
+            text = token.replace("\n", "\n[dim]  │[/] ")
+            self.console.print(text, end="", highlight=False)
             return
 
         # Another agent's tokens — buffer until current owner finishes.
@@ -202,39 +211,94 @@ class NonStopREPL:
     # ── UI chrome ────────────────────────────────────────────────────
 
     def _show_banner(self):
-        self.console.print()
-        self.console.print(f" [bold]Non-Stop[/] [dim]v{VERSION}[/]")
-        self.console.print(" [dim]Type /help for commands · Esc+Enter for newline · just type to talk[/]")
+        proj = self.projects.active_name
+        cwd = os.getcwd().replace(str(Path.home()), "~")
+        lines = [
+            Text.from_markup("[bold #ff8800]✻[/] [bold]Welcome to Non-Stop[/]  [dim]v" + VERSION + "[/]"),
+            Text(""),
+            Text.from_markup("  [dim]/help[/] for commands · [dim]/summon[/] to add an agent · [dim]Esc+Enter[/] for newline"),
+            Text(""),
+            Text.from_markup(f"  [dim]project:[/] {proj}    [dim]cwd:[/] {cwd}"),
+        ]
         if self._update_available:
             short = self._update_available.get("short", "")
-            self.console.print(f" [yellow]↑ update available[/] [dim]({short}) — run /update[/]")
+            lines.append(Text(""))
+            lines.append(Text.from_markup(f"  [#ff8800]↑ update available[/] [dim]({short}) — run /update[/]"))
+
+        self.console.print()
+        self.console.print(Panel(
+            Group(*lines),
+            border_style="#ff8800",
+            box=box.ROUNDED,
+            padding=(0, 1),
+            expand=False,
+        ))
         self.console.print()
 
     def _show_commands(self):
-        # Two compact columns of "/cmd  description".
-        cells = []
-        for cmd in self.commands._commands.values():
-            cells.append(Text.assemble(("/" + cmd.name, "bold"), ("  " + cmd.help_text, "dim")))
-        self.console.print(Columns(cells, equal=False, expand=True, padding=(0, 2)))
+        groups = [
+            ("Agents", ["summon", "tell", "team", "kill", "agents", "remember", "presets"]),
+            ("Workspace", ["board", "projects", "model", "models", "rules", "status"]),
+            ("System", ["help", "update", "clear", "quit"]),
+        ]
+        by_name = {c.name: c for c in self.commands._commands.values()}
+
+        table = Table.grid(padding=(0, 2), expand=False)
+        table.add_column(style="bold")
+        table.add_column(style="dim")
+
+        for i, (label, names) in enumerate(groups):
+            if i:
+                table.add_row("", "")
+            table.add_row(Text(label.upper(), style="bold #ff8800"), "")
+            for n in names:
+                cmd = by_name.get(n)
+                if not cmd:
+                    continue
+                table.add_row(f"/{cmd.name}", cmd.help_text)
+
+        self.console.print()
+        self.console.print(Panel(
+            table,
+            title="[bold] commands [/]",
+            title_align="left",
+            border_style="dim",
+            box=box.ROUNDED,
+            padding=(1, 2),
+            expand=False,
+        ))
+        self.console.print()
 
     def _toolbar(self):
         proj = self.projects.active_name
         agents = self.supervisor.list_agents(project_name=proj)
         busy = sum(1 for a in agents if a["busy"])
         model_short = self._default_model.split("/")[-1]
-        parts = [
-            f" \x1b[1m{proj}\x1b[0m",
+
+        left_parts = [
+            f"\x1b[1m{proj}\x1b[0m",
             f"{len(agents)} agent{'s' if len(agents) != 1 else ''}"
-            + (f" \x1b[33m({busy} thinking)\x1b[0m" if busy else ""),
-            model_short,
+            + (f" \x1b[38;5;208m({busy} ✻ thinking)\x1b[0m" if busy else ""),
+            f"\x1b[2m{model_short}\x1b[0m",
         ]
         if self._update_available:
-            parts.append("\x1b[33m↑ /update\x1b[0m")
-        return ANSI("  ·  ".join(parts))
+            left_parts.append("\x1b[38;5;208m↑ /update\x1b[0m")
+        left = "  ·  ".join(left_parts)
+
+        right = "\x1b[2m? for help · ↵ send · esc+↵ newline\x1b[0m"
+
+        try:
+            width = self.console.width
+        except Exception:
+            width = 80
+        # Strip ANSI for width calc.
+        plain_left = re.sub(r"\x1b\[[0-9;]*m", "", left)
+        plain_right = re.sub(r"\x1b\[[0-9;]*m", "", right)
+        gap = max(2, width - len(plain_left) - len(plain_right) - 2)
+        return ANSI(" " + left + (" " * gap) + right + " ")
 
     def _prompt(self):
-        proj = self.projects.active_name
-        return ANSI(f"\x1b[2m{proj}\x1b[0m \x1b[38;5;208m›\x1b[0m ")
+        return ANSI("\x1b[38;5;208m❯\x1b[0m ")
 
     # ── Commands ─────────────────────────────────────────────────────
 
