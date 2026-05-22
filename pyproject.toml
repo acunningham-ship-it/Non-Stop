@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/armanicunningham/Non-Stop"
-Source = "https://github.com/armanicunningham/Non-Stop"
+Homepage = "https://github.com/acunningham-ship-it/Non-Stop"
+Source = "https://github.com/acunningham-ship-it/Non-Stop"
 
 [project.scripts]
 nonstop = "nonstop.main:run"

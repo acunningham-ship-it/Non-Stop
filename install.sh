@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Non-Stop Installer — one-liner: curl -fsSL https://raw.githubusercontent.com/armanicunningham/Non-Stop/main/install.sh | bash
+# Non-Stop Installer — one-liner: curl -fsSL https://raw.githubusercontent.com/acunningham-ship-it/Non-Stop/main/install.sh | bash
 set -euo pipefail
 
-REPO="armanicunningham/Non-Stop"
+REPO="acunningham-ship-it/Non-Stop"
 INSTALL_DIR="${HOME}/non-stop"
 PYTHON="${PYTHON:-python3}"
 

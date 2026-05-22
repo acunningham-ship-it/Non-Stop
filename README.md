@@ -5,7 +5,7 @@ Multi-agent terminal. AI agents work together toward shared goals. Built for the
 ## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/armanicunningham/Non-Stop/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/acunningham-ship-it/Non-Stop/main/install.sh | bash
 
 export OPENROUTER_API_KEY="sk-..."
 
