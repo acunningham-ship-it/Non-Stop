@@ -1,22 +1,24 @@
-"""Non-Stop REPL — clean, usable multi-agent terminal."""
+"""Non-Stop REPL — Gorgeous, modern terminal UI with a professional developer dashboard."""
 
 from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
-from prompt_toolkit.completion import Completer, Completion, WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from rich.console import Console
 from rich.panel import Panel
 from rich.markup import escape
 from rich.text import Text
-from rich.table import Table
 from rich.align import Align
+from rich.table import Table
+from rich.columns import Columns
 from rich import box
 
 from nonstop.cli.commands import CommandRegistry, Command
@@ -28,23 +30,25 @@ from nonstop.runtime.teams import list_teams, TEAM_TEMPLATES
 from nonstop.runtime.orchestrator import Orchestrator
 
 
-# ── Colors ──────────────────────────────────────────────────────────
+# ── Vercel/Linear-inspired Terminal Palette ─────────────────────────
 
 STYLE = Style.from_dict({
-    "prompt": "bold cyan",
+    "prompt": "bold #4AF626", # Retro hacker green prompt marker
+    "pygments.completion": "bg:#1e1e1e #ffffff",
+    "pygments.completion.current": "bg:#3c3c3c #ffffff bold",
 })
 
 AGENT_COLORS = [
-    "#7C9AE6", "#E67C7C", "#7CE68C", "#E6C87C",
-    "#C87CE6", "#7CE6E6", "#E67CAE", "#7CE6AE",
+    "cyan", "bright_magenta", "bright_green", "yellow",
+    "magenta", "bright_cyan", "bright_yellow", "bright_blue"
 ]
 
 VERSION = "0.2.0"
 
-# ── Command autocomplete ───────────────────────────────────────────
+# ── Clean Command Autocomplete ─────────────────────────────────────
 
 class CommandCompleter(Completer):
-    """Tab-completes slash commands."""
+    """Tab-completes slash commands with dynamic context."""
 
     def __init__(self, commands: CommandRegistry):
         self.commands = commands
@@ -58,13 +62,17 @@ class CommandCompleter(Completer):
             names = [cmd.name] + cmd.aliases
             for n in names:
                 if n.startswith(partial):
-                    yield Completion(f"/{n}", start_position=-len(text))
+                    yield Completion(
+                        f"/{n}", 
+                        start_position=-len(text),
+                        display=f"/{n} — {cmd.help_text[:40]}"
+                    )
 
 
-# ── REPL ────────────────────────────────────────────────────────────
+# ── Gorgeous Interactive REPL ───────────────────────────────────────
 
 class NonStopREPL:
-    """Clean multi-agent terminal."""
+    """Beautiful developer-focused multi-agent terminal."""
 
     def __init__(self, supervisor: Supervisor, projects: ProjectManager):
         self.supervisor = supervisor
@@ -100,107 +108,127 @@ class NonStopREPL:
 
     def _register_commands(self):
         cmds = [
-            Command("help", self._cmd_help, "Show this help", ["?"]),
-            Command("summon", self._cmd_summon, "Spawn an agent — /summon <name> [as <desc>|<preset>]", ["s"]),
-            Command("tell", self._cmd_tell, "Message an agent — /tell <name> <message>", ["t"]),
-            Command("team", self._cmd_team, "Spawn a team — /team [build|research|debate|review]", []),
-            Command("board", self._cmd_board, "Kanban board — /board [add|move|comment]", ["b"]),
-            Command("projects", self._cmd_projects, "Manage projects — /projects [new|switch]", ["p"]),
-            Command("model", self._cmd_model, "Set default model — /model <name>", ["m"]),
-            Command("models", self._cmd_models, "List available models", []),
-            Command("agents", self._cmd_agents, "List active agents", ["a"]),
-            Command("kill", self._cmd_kill, "Remove an agent — /kill <name>", ["k"]),
-            Command("rules", self._cmd_rules, "Orchestration rules — /rules [add|remove]", ["r"]),
-            Command("remember", self._cmd_remember, "Show agent memory — /remember <name>", []),
-            Command("presets", self._cmd_presets, "List personality presets", []),
-            Command("status", self._cmd_status, "System status", ["st"]),
-            Command("clear", self._cmd_clear, "Clear screen", ["c"]),
-            Command("quit", self._cmd_quit, "Exit Non-Stop", ["q", "exit"]),
+            Command("help", self._cmd_help, "Show design menu and guide", ["?"]),
+            Command("summon", self._cmd_summon, "Summon agent — /summon <name> [as <desc>|<preset>]", ["s"]),
+            Command("tell", self._cmd_tell, "Direct message — /tell <name> <message>", ["t"]),
+            Command("team", self._cmd_team, "Spawn specialized team — /team [build|research|debate|review]", []),
+            Command("board", self._cmd_board, "Show interactive board — /board [add|move|comment]", ["b"]),
+            Command("projects", self._cmd_projects, "Switch workspaces — /projects [new|switch]", ["p"]),
+            Command("model", self._cmd_model, "Change running LLM — /model <name>", ["m"]),
+            Command("models", self._cmd_models, "Show premium model selection", []),
+            Command("agents", self._cmd_agents, "Display running agents", ["a"]),
+            Command("kill", self._cmd_kill, "Decommission agent — /kill <name>", ["k"]),
+            Command("rules", self._cmd_rules, "Display rule chains — /rules [add|remove]", ["r"]),
+            Command("remember", self._cmd_remember, "Inspect cognitive state — /remember <name>", []),
+            Command("presets", self._cmd_presets, "Enumerate behavior presets", []),
+            Command("status", self._cmd_status, "Deep telemetry inspection", ["st"]),
+            Command("clear", self._cmd_clear, "Purge display log", ["c"]),
+            Command("quit", self._cmd_quit, "Graceful absolute exit", ["q", "exit"]),
         ]
         for cmd in cmds:
             self.commands.register(cmd)
 
-    # ── Streaming ────────────────────────────────────────────────────
+    # ── High-Fidelity Streaming ──────────────────────────────────────
 
     def _on_stream_token(self, name: str, token: str, accumulated: str):
-        """Called for each token. Shows a live-updating line."""
+        """Elegant console status animation for active token generation."""
         color = self._agent_color(name)
-        last_line = accumulated.replace("\n", " ↵ ")[-100:]
+        cleaned_tok = accumulated.replace("\n", " ↵ ")[-60:]
+        # Render a gorgeous minimalist spinner bar
         sys.stdout.write(
-            f"\r  [{color}]{name}[/] {last_line}{' ' * max(0, 20 - len(last_line))}"
+            f"\r  [dim]⚡[/] [[{color}]{name}[/]] [italic white]{cleaned_tok}[/]{' ' * max(0, 15 - len(cleaned_tok))}"
         )
         sys.stdout.flush()
 
     def _on_stream_end(self, name: str, full_response: str):
-        """Streaming done — show the clean panel."""
+        """Render a sophisticated custom card block with rounded corners."""
         color = self._agent_color(name)
-        # Clear streaming line
+        # Clean inline lines completely
         sys.stdout.write("\r" + " " * (self.console.width or 80) + "\r")
         sys.stdout.flush()
 
-        content = full_response[:1500]
-        if len(full_response) > 1500:
-            content += "\n… (truncated)"
-
+        # Render with Markdown-like professional title styling
         panel = Panel(
-            escape(content),
-            title=f"[{color}]{name}[/]",
+            Text.from_markup(escape(full_response)),
+            title=f" ◈  [{color} bold]{name}[/] [dim]({self._default_model.split('/')[-1]})[/] ",
             title_align="left",
-            border_style=color,
-            padding=(0, 1),
-            width=None,
+            border_style=f"bold {color}",
+            padding=(1, 2),
             box=box.ROUNDED,
         )
+        self.console.print()
         self.console.print(panel)
         self.console.print()
 
-    # ── Help / Command Menu ─────────────────────────────────────────
+    # ── Custom Rich UI Layout Panels ─────────────────────────────────
 
     def _show_command_menu(self):
-        """Show a compact command menu."""
+        """Show gorgeous grid of options designed for terminal workspaces."""
         table = Table(
-            box=box.SIMPLE,
-            show_header=False,
+            box=box.MINIMAL,
+            show_header=True,
+            header_style="bold cyan",
             padding=(0, 2),
-            collapse=True,
         )
-        table.add_column("cmd", style="bold cyan", no_wrap=True)
-        table.add_column("desc", style="")
+        table.add_column("Command", style="bold green")
+        table.add_column("Aliases", style="dim")
+        table.add_column("Operational Description", style="italic")
 
         for cmd in self.commands._commands.values():
-            aliases = f" [dim]({', '.join(cmd.aliases)})[/]" if cmd.aliases else ""
-            table.add_row(f"/{cmd.name}{aliases}", cmd.help_text)
+            aliases = ", ".join(cmd.aliases) if cmd.aliases else "—"
+            table.add_row(f"/{cmd.name}", aliases, cmd.help_text)
 
-        self.console.print(table)
+        self.console.print(Panel(
+            table,
+            title=" SYSTEM OPERATIONAL COMMANDS ",
+            title_align="center",
+            border_style="cyan",
+            padding=(1, 1)
+        ))
 
     def _show_banner(self):
-        """Show a minimal startup banner."""
+        """Show a premium design-focused splash screen."""
         self.console.print()
-        self.console.print(
-            Text("  Non-Stop  ", style="bold cyan") +
-            Text(f"v{VERSION}", style="dim") +
-            Text("  —  ", style="dim") +
-            Text("multi-agent terminal", style="")
+        banner_content = (
+            "      _  __               ____  _                \n"
+            "     / |/ /___  ___  ____/_  _/( )___  ___  ___  \n"
+            "    /    // _ \\/ _ \\/___/ / /  |// _ \\/ _ \\/ _ \\ \n"
+            "   /_/|_/ \\___/_//_/     /_/     \\___/ .__/ .__/ \n"
+            "                                    /_/  /_/     "
         )
-        self.console.print(
-            Text("  Type / to see commands  |  ", style="dim") +
-            Text("export OPENROUTER_API_KEY=...", style="dim")
-        )
+        self.console.print(Align.center(Text(banner_content, style="bold cyan")))
         self.console.print()
+        self.console.print(Align.center(
+            Text("ENGINE CONFIGU ATION READY", style="dim") +
+            Text("  |  ", style="bright_magenta") +
+            Text(f"STATION VERSION v{VERSION}", style="bold #4AF626") +
+            Text("  |  ", style="bright_magenta") +
+            Text("DURABLE CONTEXT ACTIVE", style="dim")
+        ))
+        self.console.print()
+        self._render_status_bar()
 
-    def _prompt_text(self) -> str:
-        """Build a clean prompt showing project context."""
+    def _render_status_bar(self):
+        """Minimalist high-tech status line."""
         proj = self.projects.active_name
         agents = self.supervisor.list_agents(project_name=proj)
         busy = sum(1 for a in agents if a["busy"])
-        suffix = ""
-        if busy:
-            suffix = f" ({busy} busy)"
-        elif agents:
-            suffix = f" ({len(agents)} agents)"
-        return f"[{proj}{suffix}]> "
+        
+        status_line = (
+            f" [bold black bg:cyan] WORKSPACE: {proj.upper()} [/]"
+            f"  [bold]●[/] {len(agents)} Active Agents"
+            f"  [bold]●[/] {busy} Engaged"
+            f"  [bold]●[/] Model: [{STYLE['prompt']}]{self._default_model.split('/')[-1]}[/]"
+        )
+        self.console.print(status_line)
+        self.console.print()
 
-    # ── Slash Commands ───────────────────────────────────────────────
+    def _prompt_text(self) -> str:
+        """Create sleek command line."""
+        proj = self.projects.active_name
+        return f"[dim]nonstop[/][cyan]@{proj}[/]::▶ "
+
+    # ── Enhanced Command Implementations ──────────────────────────────
 
     async def _cmd_help(self, args: str) -> str:
         self._show_command_menu()
@@ -209,7 +237,7 @@ class NonStopREPL:
     async def _cmd_summon(self, args: str) -> str:
         if not args.strip():
             presets = ", ".join(p["name"] for p in list_presets())
-            return f"Usage: /summon <name> [as <desc>|<preset>]\nPresets: {presets}"
+            return f"[yellow]⚡[/] Usage: /summon <name> [as <desc>|<preset>]\nAvailable presets: {presets}"
 
         parts = args.strip().split(maxsplit=2)
         name = parts[0]
@@ -219,30 +247,30 @@ class NonStopREPL:
 
         result = await self.supervisor.spawn_agent(name, persona_ref, model=self._default_model)
         if isinstance(result, str):
-            return f"[red]✗[/] {result}"
+            return f"[red]✗[/] Spawn error: {result}"
 
         result.set_stream_callbacks(
             on_token=self._on_stream_token,
             on_end=self._on_stream_end,
         )
-        return f"[green]✓[/] {name} is ready"
+        return f"  [green]✔[/] Agent [bold cyan]{name}[/] initialized and standing by to execute."
 
     async def _cmd_tell(self, args: str) -> str:
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
-            return "Usage: /tell <name> <message>"
+            return "[yellow]⚡[/] Usage: /tell <name> <message>"
         err = await self.supervisor.send_to_agent(parts[0], parts[1])
         if err:
-            return f"[red]✗[/] {err}"
-        return f"→ {parts[0]}"
+            return f"[red]✗[/] Offline state: {err}"
+        return f"  [dim]▶[/] Dispatching instructions to [{self._agent_color(parts[0])}]{parts[0]}[/]..."
 
     async def _cmd_team(self, args: str) -> str:
         name = args.strip().lower()
         if not name:
             teams = list_teams()
-            lines = ["Teams:"]
+            lines = ["[bold info]Available Team Formations:[/]\n"]
             for t in teams:
-                lines.append(f"  [bold]{t['name']}[/] — {t['description']}")
+                lines.append(f"  ◈  [bold cyan]{t['name'].upper()}[/] — {t['description']}")
             return "\n".join(lines)
 
         results = await self.supervisor.spawn_team(name)
@@ -257,152 +285,205 @@ class NonStopREPL:
 
         lines = []
         if agents:
-            lines.append(f"[green]✓[/] Team '{name}': {', '.join(a.name for a in agents)}")
+            lines.append(f"  [green]✔[/] Formation [bold cyan]{name.upper()}[/] deployed successfully!")
+            lines.append(f"     Sub-systems: " + ", ".join(f"[{self._agent_color(a.name)}]{a.name}[/]" for a in agents))
         if errors:
             for e in errors:
-                lines.append(f"[red]✗[/] {e}")
-        return "\n".join(lines) if lines else f"Unknown team '{name}'"
+                lines.append(f"  [red]✗[/] {e}")
+        return "\n".join(lines) if lines else f"Unknown team formation '{name}'"
 
     async def _cmd_board(self, args: str) -> str:
         parts = args.split(maxsplit=2)
         if not args:
-            return board_summary(self.projects.active_name)
+            # Render a beautiful multi-column physical Kanban layout
+            active_proj = self.projects.active_name
+            cols = ["backlog", "in_progress", "review", "done"]
+            panels = []
+            
+            for c in cols:
+                tickets_in_col = list_tickets(active_proj, c)
+                ticket_table = Table(show_header=False, box=box.SIMPLE_HEAD, collapse=True)
+                ticket_table.add_column("Info")
+                
+                for t in tickets_in_col:
+                    assigned = f" ([dim]@{t.assigned_to}[/])" if t.assigned_to else ""
+                    ticket_table.add_row(f"[bold cyan]#{t.id}[/] {t.title}{assigned}")
+                
+                panels.append(Panel(
+                    ticket_table,
+                    title=f" {c.upper()} ({len(tickets_in_col)}) ",
+                    border_style="cyan" if c == "in_progress" else "dim",
+                    padding=(0, 1),
+                    box=box.ROUNDED,
+                ))
+            
+            self.console.print(Columns(panels, equal=True))
+            return ""
 
         if parts[0] == "add" and len(parts) >= 2:
             tid = create_ticket(parts[1], project=self.projects.active_name)
-            return f"[green]✓[/] Ticket #{tid}: {parts[1]}"
+            return f"  [green]✔[/] Logged task [bold cyan]#{tid}[/] in project backlog."
 
         if parts[0] == "move" and len(parts) >= 3:
             try:
                 tid = int(parts[1].lstrip("#"))
             except ValueError:
-                return "Usage: /board move <#id> <column>"
+                return "[yellow]⚡[/] Usage: /board move <#id> <column>"
             err = move_ticket(tid, parts[2])
-            return f"[green]✓[/] Ticket #{tid} → {parts[2]}" if not err else f"[red]✗[/] {err}"
+            return f"  [green]✔[/] Ticket [bold cyan]#{tid}[/] migrated to state [bold magenta]{parts[2]}[/]." if not err else f"  [red]✗[/] {err}"
 
         if parts[0] == "comment" and len(parts) >= 3:
             try:
                 tid = int(parts[1].lstrip("#"))
             except ValueError:
-                return "Usage: /board comment <#id> <text>"
+                return "[yellow]⚡[/] Usage: /board comment <#id> <text>"
             add_comment(tid, "user", parts[2])
-            return f"[green]✓[/] Comment on #{tid}"
+            return f"  [green]✔[/] Comment appended to transaction [bold cyan]#{tid}[/]."
 
-        return "Usage: /board add <title> | /board move <#id> <col> | /board comment <#id> <text>"
+        return "[yellow]⚡[/] Usage: /board [add <title> | move <#id> <col> | comment <#id> <text>]"
 
     async def _cmd_projects(self, args: str) -> str:
         parts = args.split(maxsplit=1)
         if not args:
-            lines = ["Projects:"]
+            table = Table(box=box.MINIMAL_DOUBLE, show_header=True)
+            table.add_column("Workspace", style="bold cyan")
+            table.add_column("Registered Agents", style="green")
+            
             for p in self.projects.list():
-                m = "[cyan]»[/]" if p["active"] else " "
-                agents = ", ".join(p["agents"]) if p["agents"] else "[dim]empty[/]"
-                lines.append(f"  {m} {p['name']}  {agents}")
-            return "\n".join(lines)
+                workspace_str = f"◈ {p['name'].upper()}"
+                if p["active"]:
+                    workspace_str = f"[bold green]▶ {p['name'].upper()} (Current)[/]"
+                agents_str = ", ".join(p["agents"]) if p["agents"] else "[dim]None[/]"
+                table.add_row(workspace_str, agents_str)
+                
+            self.console.print(Panel(table, border_style="cyan", title=" CORE WORKSPACE MATRIX "))
+            return ""
 
         if parts[0] == "new" and len(parts) > 1:
             err = await self.projects.create(parts[1])
-            return f"[green]✓[/] Created '{parts[1]}'" if not err else f"[red]✗[/] {err}"
+            return f"  [green]✔[/] Project environment [bold green]'{parts[1].upper()}'[/] allocated." if not err else f"  [red]✗[/] Allocation failed: {err}"
 
         err = await self.projects.switch(parts[0])
-        return f"[green]✓[/] Switched to '{parts[0]}'" if not err else f"[red]✗[/] {err}"
+        return f"  [green]✔[/] Workspace context redirected to [bold green]'{parts[0].upper()}'[/]." if not err else f"  [red]✗[/] Workspace resolve error: {err}"
 
     async def _cmd_model(self, args: str) -> str:
         model = args.strip()
         if not model:
-            return f"Default model: [bold]{self._default_model}[/]\nUsage: /model <name>"
+            return f"[yellow]⚡[/] Default running model: [bold]{self._default_model}[/]"
         self._default_model = model
-        return f"[green]✓[/] Model: [bold]{model}[/]"
+        return f"  [green]✔[/] Master routing path linked to [bold magenta]{model}[/]."
 
     async def _cmd_models(self, args: str) -> str:
         models = [
+            ("openrouter/google/gemini-2.5-flash", "Google Gemini 2.5 Flash"),
+            ("openrouter/google/gemini-2.5-pro", "Google Gemini 2.5 Pro"),
             ("openrouter/openai/gpt-4o", "OpenAI GPT-4o"),
-            ("openrouter/openai/gpt-4o-mini", "OpenAI GPT-4o Mini"),
-            ("openrouter/anthropic/claude-sonnet-4", "Claude Sonnet 4"),
-            ("openrouter/anthropic/claude-opus-4", "Claude Opus 4"),
-            ("openrouter/google/gemini-2.0-flash-001", "Gemini 2.0 Flash"),
-            ("openrouter/deepseek/deepseek-v4", "DeepSeek V4"),
+            ("openrouter/openai/gpt-4o-mini", "OpenAI GPT-4o Mini (Ultra-performance)"),
+            ("openrouter/anthropic/claude-3.5-sonnet", "Claude 3.5 Sonnet"),
+            ("openrouter/deepseek/deepseek-v3", "DeepSeek V3"),
         ]
-        lines = [f"Current: [bold]{self._default_model}[/]\n"]
+        table = Table(box=box.SIMPLE, show_header=False)
+        table.add_column("Active Indicator")
+        table.add_column("ID")
+        table.add_column("Specifications")
+        
         for m, d in models:
-            marker = " [green]►[/]" if m == self._default_model else "  "
-            lines.append(f"{marker} {d}")
-            lines.append(f"   [dim]{m}[/]")
-        return "\n".join(lines)
+            marker = "[bold cyan]►[/]" if m == self._default_model else " "
+            table.add_row(marker, f"[bold]{d}[/]", f"[dim]{m}[/]")
+            
+        self.console.print(Panel(table, title=" AVAILABLE COGNITIVE ROUTERS ", border_style="cyan"))
+        return ""
 
     async def _cmd_agents(self, args: str) -> str:
         agents = self.supervisor.list_agents()
         if not agents:
-            return "[dim]No agents. Use /summon[/]"
-        lines = ["Agents:"]
+            return "  [dim]No system nodes initialized. Summon with /summon.[/]"
+        
+        table = Table(box=box.MINIMAL_HEAVY, show_header=True)
+        table.add_column("Node ID", style="bold")
+        table.add_column("Status", style="bold")
+        table.add_column("Affiliation Workspace", style="dim")
+        
         for a in agents:
-            state = "[bold]●[/] busy" if a["busy"] else "[dim]●[/] idle"
-            m = "[cyan]»[/]" if a["active"] else " "
-            c = self._agent_color(a["name"])
-            lines.append(f"  {m} [{c}]{a['name']}[/]  {state}")
-            if not a["active"]:
-                lines[-1] += f" [dim](project: {a['project']})[/]"
-        return "\n".join(lines)
+            state = "[bold green]ONLINE (Idle)[/]"
+            if a["busy"]:
+                state = "[bold yellow]COMPUTING (Thinking)[/]"
+            name_colored = f"[{self._agent_color(a['name'])}]{a['name']}[/]"
+            
+            table.add_row(name_colored, state, a["project"].upper())
+            
+        self.console.print(Panel(table, title=" COGNITIVE TELEMETRY STATUS "))
+        return ""
 
     async def _cmd_kill(self, args: str) -> str:
         name = args.strip()
         if not name:
-            return "Usage: /kill <name>"
+            return "[yellow]⚡[/] Usage: /kill <name>"
         err = await self.supervisor.kill_agent(name)
-        return f"[green]✓[/] {name} dismissed" if not err else f"[red]✗[/] {err}"
+        return f"  [green]✔[/] Agent node [bold red]{name}[/] purged from memory loop." if not err else f"  [red]✗[/] Pure error: {err}"
 
     async def _cmd_rules(self, args: str) -> str:
         parts = args.split(maxsplit=2)
         if not args:
             rules = self.orchestrator.list_rules(self.projects.active_name)
             if not rules:
-                return "[dim]No rules.[/]"
-            lines = ["Rules:"]
+                return "  [dim]System chains are blank. Insert a link with /rules add.[/]"
+            
+            table = Table(box=box.SIMPLE, show_header=True)
+            table.add_column("ID", style="bold")
+            table.add_column("Trigger Stream", style="italic")
+            table.add_column("Target Chain Pipeline", style="bold green")
+            
             for r in rules:
-                lines.append(f"  #{r['id']} when [bold]{r['trigger']}[/] → {r['action']}")
-            return "\n".join(lines)
+                table.add_row(f"#{r['id']}", r['trigger'], r['action'])
+            self.console.print(Panel(table, title=" CORE ROUTING CHAINS "))
+            return ""
 
         if parts[0] == "add" and len(parts) >= 3:
             self.orchestrator.add_rule(parts[1], parts[2], project=self.projects.active_name)
-            return f"[green]✓[/] Rule: when '{parts[1]}' → {parts[2]}"
+            return f"  [green]✔[/] System chain instantiated: when [italic]{parts[1]}[/] ➔ [bold green]{parts[2]}[/]."
 
         if parts[0] == "remove" and len(parts) >= 2:
             try:
                 self.orchestrator.remove_rule(int(parts[1]))
-                return f"[green]✓[/] Rule #{parts[1]} removed"
+                return f"  [green]✔[/] Chain link #{parts[1]} decoupled."
             except ValueError:
-                return "Usage: /rules remove <id>"
+                return "[yellow]⚡[/] Usage: /rules remove <id>"
 
-        return "Usage: /rules [add <trigger> <action> | remove <id>]"
+        return "[yellow]⚡[/] Usage: /rules [add <trigger> <action> | remove <id>]"
 
     async def _cmd_remember(self, args: str) -> str:
         name = args.strip()
         if not name:
-            return "Usage: /remember <name>"
+            return "[yellow]⚡[/] Usage: /remember <name>"
         agent = self.supervisor.get_agent(name)
         if not agent:
-            return f"No agent '{name}'"
+            return f"  [red]✗[/] Resolved target not found: '{name}'"
 
         facts = agent.memory.recall_all()
         traits = agent.memory.get_profile()
-        lines = [f"[bold]{name}[/] memory:"]
-        if facts:
-            for k, v in facts.items():
-                lines.append(f"  {k}: {v[:100]}")
-        else:
-            lines.append("  [dim]no facts[/]")
-        if traits:
-            lines.append("")
-            for t in traits:
-                lines.append(f"  trait: {t['trait']}")
-        return "\n".join(lines)
+        
+        table = Table(box=box.SIMPLE, show_header=False)
+        table.add_column("Type", style="bold")
+        table.add_column("Payload")
+        
+        for k, v in facts.items():
+            table.add_row(k.upper().replace("_", " "), v)
+        for t in traits:
+            table.add_row("LEARNED TRAIT", f"[italic cyan]{t['trait']}[/]")
+            
+        self.console.print(Panel(table, title=f" {name.upper()}'S COGNITIVE BASE "))
+        return ""
 
     async def _cmd_presets(self, args: str) -> str:
         presets = list_presets()
-        lines = ["Presets — /summon <name> <preset>:"]
+        table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold green")
+        table.add_column("Preset Pattern")
+        table.add_column("Internal System Prompt Matrix")
         for p in presets:
-            lines.append(f"  [bold]{p['name']}[/] — {p['description']}")
-        return "\n".join(lines)
+            table.add_row(p['name'], p['description'])
+        self.console.print(Panel(table, title=" COGNITIVE BEHAVIOR PATTERNS "))
+        return ""
 
     async def _cmd_status(self, args: str) -> str:
         proj = self.projects.active_name
@@ -412,29 +493,16 @@ class NonStopREPL:
         tickets = list_tickets(proj)
         rules = self.orchestrator.list_rules(proj)
 
-        lines = [
-            f"[bold]Non-Stop v{VERSION}[/]",
-            f"Project: [cyan]{proj}[/]  |  Agents: {len(active)} active",
-        ]
-        if bg:
-            lines.append(f"Background: {len(bg)} agents across other projects")
-        if tickets:
-            cols = {}
-            for t in tickets:
-                cols[t.column] = cols.get(t.column, 0) + 1
-            board_line = ", ".join(f"{k}: {v}" for k, v in cols.items())
-            lines.append(f"Board: {len(tickets)} tickets ({board_line})")
-        if rules:
-            lines.append(f"Rules: {len(rules)} active")
-        lines.append(f"Model: {self._default_model}")
-
-        if active:
-            lines.append("")
-            for a in active:
-                state = "busy" if a["busy"] else "idle"
-                c = self._agent_color(a["name"])
-                lines.append(f"  [{c}]{a['name']}[/] — {state}")
-        return "\n".join(lines)
+        status_table = Table(box=box.MINIMAL, show_header=False)
+        status_table.add_row("[bold cyan]Non-Stop Node Workspace[/]", f"[bold green]{proj.upper()}[/]")
+        status_table.add_row("Primary Core Memory Stream", f"{len(all_a)} active sub-agents")
+        status_table.add_row("Background Node Slices", f"{len(bg)} sleeping agents")
+        status_table.add_row("Pending Board Tickets", f"{len(tickets)}")
+        status_table.add_row("Orchestration Node Rules", f"{len(rules)}")
+        status_table.add_row("Active Cognitive Model", f"[bold green]{self._default_model}[/]")
+        
+        self.console.print(Panel(status_table, title=" CORE SYSTEM INTEGRITY STATUS "))
+        return ""
 
     async def _cmd_clear(self, args: str) -> str:
         self.console.clear()
@@ -444,7 +512,7 @@ class NonStopREPL:
         self.running = False
         return ""
 
-    # ── Main Loop ────────────────────────────────────────────────────
+    # ── Master Loops ──────────────────────────────────────────────────
 
     async def run(self):
         self._show_banner()
@@ -460,7 +528,7 @@ class NonStopREPL:
                     if not text.strip():
                         continue
 
-                    # / alone shows command menu
+                    # Compact display trigger
                     if text.strip() == "/":
                         self._show_command_menu()
                         continue
@@ -479,17 +547,17 @@ class NonStopREPL:
                 except EOFError:
                     break
                 except Exception as e:
-                    self.console.print(f"  [red]✗ {e}[/]")
+                    self.console.print(f"  [red]✗ Runtime Error: {e}[/]")
 
         self.console.print()
-        self.console.print("[dim]Non-Stop stopped[/]")
+        self.console.print("[dim]Non-Stop system loop decoupled. Program terminated.[/]")
         await self.supervisor.shutdown_all()
 
     async def _handle_input(self, text: str):
-        """Route user input to agents."""
+        """Route user inputs gracefully, prioritizing PM routing patterns."""
         proj = self.projects.active
         if not proj.agents:
-            self.console.print("  [dim]No agents. Use /summon or /team[/]\n")
+            self.console.print("  [dim]No agents connected. Summon one with /summon.[/]\n")
             return
 
         for name, agent in proj.agents.items():
@@ -497,7 +565,7 @@ class NonStopREPL:
                 await agent.direct_message(text)
                 return
 
-        # All busy
+        # Busy state exception
         first = list(proj.agents.values())[0]
-        self.console.print("  [dim]All agents busy — queued[/]")
+        self.console.print("  [dim]Active nodes busy. Appending input to default agent buffer...[/]")
         await first.direct_message(text)
