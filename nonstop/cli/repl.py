@@ -216,7 +216,7 @@ class NonStopREPL:
         lines = [
             Text.from_markup("[bold #ff8800]✻[/] [bold]Welcome to Non-Stop[/]  [dim]v" + VERSION + "[/]"),
             Text(""),
-            Text.from_markup("  [dim]/help[/] for commands · [dim]/summon[/] to add an agent · [dim]Esc+Enter[/] for newline"),
+            Text.from_markup("  [dim]Just type to talk[/] · [dim]/help[/] for commands · [dim]/team[/] for multi-agent · [dim]Esc+Enter[/] newline"),
             Text(""),
             Text.from_markup(f"  [dim]project:[/] {proj}    [dim]cwd:[/] {cwd}"),
         ]
@@ -548,11 +548,30 @@ class NonStopREPL:
 
     # ── Loop ─────────────────────────────────────────────────────────
 
+    DEFAULT_AGENT_NAME = "nova"
+
+    async def _ensure_default_agent(self):
+        """If the active project has no agents, spawn one so typing Just Works."""
+        proj = self.projects.active
+        if proj.agents:
+            return
+        result = await self.supervisor.spawn_agent(
+            self.DEFAULT_AGENT_NAME,
+            persona_ref="",
+            model=self._default_model,
+        )
+        if not isinstance(result, str):
+            result.set_stream_callbacks(
+                on_token=self._on_stream_token,
+                on_end=self._on_stream_end,
+            )
+
     async def run(self):
         # Kick off the update check before drawing the banner so we know
         # whether to include the "update available" line — but don't block.
         update_task = asyncio.create_task(self._check_updates_background())
 
+        await self._ensure_default_agent()
         self._show_banner()
 
         with patch_stdout():
@@ -589,8 +608,10 @@ class NonStopREPL:
     async def _handle_input(self, text: str):
         proj = self.projects.active
         if not proj.agents:
-            self.console.print("[dim]no agents — /summon one first[/]")
-            return
+            # Shouldn't happen — default agent is spawned at startup — but
+            # if every agent was killed, re-spawn the default rather than
+            # leaving the user stuck.
+            await self._ensure_default_agent()
 
         for agent in proj.agents.values():
             if not agent.is_busy:
