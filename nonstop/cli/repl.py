@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 import asyncio
+import hashlib
 import os
-import sys
+from collections import defaultdict, deque
+from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -11,10 +13,13 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markup import escape
-from rich.table import Table
+from rich.columns import Columns
+from rich.text import Text
 from rich import box
+from rich.table import Table
 
 from nonstop.cli.commands import CommandRegistry, Command
 from nonstop.runtime.supervisor import Supervisor
@@ -23,19 +28,27 @@ from nonstop.personalities import list_presets
 from nonstop.board import create_ticket, move_ticket, list_tickets, add_comment
 from nonstop.runtime.teams import list_teams
 from nonstop.runtime.orchestrator import Orchestrator
+from nonstop import updater
 
 
-VERSION = "0.2.0"
+try:
+    VERSION = _pkg_version("nonstop")
+except PackageNotFoundError:
+    VERSION = "0.0.0+dev"
+
 
 STYLE = Style.from_dict({
     "prompt": "#888888",
-    "prompt.chev": "bold #ff8800",
+    "bottom-toolbar": "noreverse #666666",
 })
 
-AGENT_COLORS = [
-    "cyan", "magenta", "green", "yellow",
-    "blue", "bright_cyan", "bright_magenta", "bright_green",
-]
+# 256-color palette: readable on dark + light terminals, no near-black/white.
+COLOR_PALETTE = [39, 45, 51, 75, 81, 117, 123, 159, 165, 171, 177, 207, 213, 219, 220, 226]
+
+
+def _color_for(name: str) -> str:
+    h = int(hashlib.md5(name.encode()).hexdigest(), 16)
+    return f"color({COLOR_PALETTE[h % len(COLOR_PALETTE)]})"
 
 
 class CommandCompleter(Completer):
@@ -69,25 +82,33 @@ class NonStopREPL:
         self.orchestrator = Orchestrator(bus=supervisor.bus, supervisor=supervisor)
         supervisor.orchestrator = self.orchestrator
 
-        self._agent_colors: dict[str, str] = {}
-        self._color_idx = 0
-        self._streaming_agent: str | None = None
+        # Streaming serialization: one agent at a time owns the output line.
+        # If another agent emits tokens while one is active, buffer them.
+        self._stream_owner: str | None = None
+        self._stream_buffers: dict[str, list[str]] = defaultdict(list)
+        self._stream_order: deque[str] = deque()
+
+        # Update state — populated by the background check.
+        self._update_available: dict | None = None
 
         self.commands = CommandRegistry()
         self._register_commands()
+
+        kb = KeyBindings()
+
+        @kb.add("escape", "enter")
+        def _(event):
+            event.current_buffer.insert_text("\n")
 
         self.session = PromptSession(
             history=FileHistory(os.path.expanduser("~/.nonstop_history")),
             style=STYLE,
             completer=CommandCompleter(self.commands),
             complete_while_typing=True,
+            key_bindings=kb,
+            bottom_toolbar=self._toolbar,
+            refresh_interval=0.5,
         )
-
-    def _agent_color(self, name: str) -> str:
-        if name not in self._agent_colors:
-            self._agent_colors[name] = AGENT_COLORS[self._color_idx % len(AGENT_COLORS)]
-            self._color_idx += 1
-        return self._agent_colors[name]
 
     def _register_commands(self):
         cmds = [
@@ -105,6 +126,7 @@ class NonStopREPL:
             Command("remember", self._cmd_remember, "Show agent memory: /remember <name>", []),
             Command("presets", self._cmd_presets, "List personality presets", []),
             Command("status", self._cmd_status, "System status", ["st"]),
+            Command("update", self._cmd_update, "Check for + apply updates", ["up"]),
             Command("clear", self._cmd_clear, "Clear screen", ["c"]),
             Command("quit", self._cmd_quit, "Exit", ["q", "exit"]),
         ]
@@ -113,38 +135,94 @@ class NonStopREPL:
 
     # ── Streaming ────────────────────────────────────────────────────
 
+    def _flush_buffer(self, name: str):
+        buf = self._stream_buffers.pop(name, [])
+        if not buf:
+            return
+        color = _color_for(name)
+        # Header for the buffered burst.
+        self.console.print(f"\n[bold {color}]{name}[/]  ", end="")
+        self.console.out("".join(buf), end="", highlight=False)
+
     def _on_stream_token(self, name: str, token: str, accumulated: str):
-        if self._streaming_agent != name:
-            color = self._agent_color(name)
-            sys.stdout.write(f"\n\x1b[1m\x1b[36m{name}\x1b[0m  ")
-            self._streaming_agent = name
-        sys.stdout.write(token)
-        sys.stdout.flush()
+        # If nobody owns the line, this agent takes it.
+        if self._stream_owner is None:
+            self._stream_owner = name
+            color = _color_for(name)
+            self.console.print(f"\n[bold {color}]{name}[/]  ", end="")
+            self.console.out(token, end="", highlight=False)
+            return
+
+        # Same agent continues writing.
+        if self._stream_owner == name:
+            self.console.out(token, end="", highlight=False)
+            return
+
+        # Another agent's tokens — buffer until current owner finishes.
+        if name not in self._stream_buffers:
+            self._stream_order.append(name)
+        self._stream_buffers[name].append(token)
 
     def _on_stream_end(self, name: str, full_response: str):
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        self._streaming_agent = None
+        if self._stream_owner == name:
+            self.console.print()  # newline closes the agent line
+            self._stream_owner = None
+            # Promote the next buffered agent (if any).
+            while self._stream_order:
+                nxt = self._stream_order.popleft()
+                if nxt in self._stream_buffers and self._stream_buffers[nxt]:
+                    self._stream_owner = nxt
+                    self._flush_buffer(nxt)
+                    # The promoted agent may still be producing; if its stream
+                    # already ended while buffered, close the line.
+                    agent = self.supervisor.get_agent(nxt)
+                    if agent is None or not agent.is_busy:
+                        self.console.print()
+                        self._stream_owner = None
+                        continue
+                    break
+        else:
+            # Owner was someone else — just dump this agent's buffer cleanly.
+            self._flush_buffer(name)
+            if self._stream_owner is None or self._stream_owner == name:
+                self.console.print()
+                self._stream_owner = None
 
-    # ── UI ───────────────────────────────────────────────────────────
+    # ── UI chrome ────────────────────────────────────────────────────
 
     def _show_banner(self):
         self.console.print()
         self.console.print(f" [bold]Non-Stop[/] [dim]v{VERSION}[/]")
-        self.console.print(" [dim]Type /help for commands, or just type to talk.[/]")
+        self.console.print(" [dim]Type /help for commands · Esc+Enter for newline · just type to talk[/]")
+        if self._update_available:
+            short = self._update_available.get("short", "")
+            self.console.print(f" [yellow]↑ update available[/] [dim]({short}) — run /update[/]")
         self.console.print()
 
     def _show_commands(self):
-        table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
-        table.add_column(style="bold")
-        table.add_column(style="dim")
+        # Two compact columns of "/cmd  description".
+        cells = []
         for cmd in self.commands._commands.values():
-            table.add_row(f"/{cmd.name}", cmd.help_text)
-        self.console.print(table)
+            cells.append(Text.assemble(("/" + cmd.name, "bold"), ("  " + cmd.help_text, "dim")))
+        self.console.print(Columns(cells, equal=False, expand=True, padding=(0, 2)))
+
+    def _toolbar(self):
+        proj = self.projects.active_name
+        agents = self.supervisor.list_agents(project_name=proj)
+        busy = sum(1 for a in agents if a["busy"])
+        model_short = self._default_model.split("/")[-1]
+        parts = [
+            f" \x1b[1m{proj}\x1b[0m",
+            f"{len(agents)} agent{'s' if len(agents) != 1 else ''}"
+            + (f" \x1b[33m({busy} thinking)\x1b[0m" if busy else ""),
+            model_short,
+        ]
+        if self._update_available:
+            parts.append("\x1b[33m↑ /update\x1b[0m")
+        return ANSI("  ·  ".join(parts))
 
     def _prompt(self):
         proj = self.projects.active_name
-        # Prompt-toolkit ANSI: dim project, orange chevron.
         return ANSI(f"\x1b[2m{proj}\x1b[0m \x1b[38;5;208m›\x1b[0m ")
 
     # ── Commands ─────────────────────────────────────────────────────
@@ -169,8 +247,7 @@ class NonStopREPL:
             return f"[red]error:[/] {result}"
 
         result.set_stream_callbacks(on_token=self._on_stream_token, on_end=self._on_stream_end)
-        color = self._agent_color(name)
-        return f"[dim]spawned[/] [{color}]{name}[/]"
+        return f"[dim]spawned[/] [{_color_for(name)}]{name}[/]"
 
     async def _cmd_tell(self, args: str) -> str:
         parts = args.split(maxsplit=1)
@@ -199,7 +276,7 @@ class NonStopREPL:
 
         lines = []
         if agents:
-            names = ", ".join(f"[{self._agent_color(a.name)}]{a.name}[/]" for a in agents)
+            names = ", ".join(f"[{_color_for(a.name)}]{a.name}[/]" for a in agents)
             lines.append(f"[dim]spawned team[/] [bold]{name}[/]: {names}")
         for e in errors:
             lines.append(f"[red]error:[/] {e}")
@@ -209,8 +286,7 @@ class NonStopREPL:
         parts = args.split(maxsplit=2)
         if not args:
             proj = self.projects.active_name
-            cols = ["backlog", "in_progress", "review", "done"]
-            for c in cols:
+            for c in ["backlog", "in_progress", "review", "done"]:
                 tickets = list_tickets(proj, c)
                 self.console.print(f"[bold]{c}[/] [dim]({len(tickets)})[/]")
                 if not tickets:
@@ -285,7 +361,7 @@ class NonStopREPL:
         if not agents:
             return "[dim]no agents — try /summon[/]"
         for a in agents:
-            color = self._agent_color(a["name"])
+            color = _color_for(a["name"])
             state = "[yellow]thinking[/]" if a["busy"] else "[dim]idle[/]"
             self.console.print(f"  [{color}]{a['name']}[/]  {state}  [dim]{a['project']}[/]")
         return ""
@@ -359,6 +435,21 @@ class NonStopREPL:
         self.console.print(f"  [dim]model[/]    {self._default_model}")
         return ""
 
+    async def _cmd_update(self, args: str) -> str:
+        self.console.print("[dim]checking for updates…[/]")
+        pending = await updater.check_for_update()
+        if pending is None:
+            self._update_available = None
+            return "[dim]already up to date[/]"
+
+        self.console.print(f"[yellow]update available:[/] {pending['short']} — {escape(pending['subject'])}")
+        self.console.print("[dim]applying…[/]")
+        ok, msg = await asyncio.to_thread(updater.apply_update)
+        if ok:
+            self._update_available = None
+            return f"[green]✓[/] {msg}"
+        return f"[red]update failed:[/] {escape(msg)}"
+
     async def _cmd_clear(self, args: str) -> str:
         self.console.clear()
         return ""
@@ -367,9 +458,26 @@ class NonStopREPL:
         self.running = False
         return ""
 
+    # ── Background tasks ─────────────────────────────────────────────
+
+    async def _check_updates_background(self):
+        try:
+            pending = await updater.check_for_update()
+            if pending:
+                self._update_available = pending
+                self.console.print(
+                    f"\n [yellow]↑ update available[/] [dim]({pending['short']}) — run /update[/]\n"
+                )
+        except Exception:
+            pass  # network/parsing failures are silent
+
     # ── Loop ─────────────────────────────────────────────────────────
 
     async def run(self):
+        # Kick off the update check before drawing the banner so we know
+        # whether to include the "update available" line — but don't block.
+        update_task = asyncio.create_task(self._check_updates_background())
+
         self._show_banner()
 
         with patch_stdout():
@@ -399,6 +507,7 @@ class NonStopREPL:
                 except Exception as e:
                     self.console.print(f"[red]error:[/] {escape(str(e))}")
 
+        update_task.cancel()
         self.console.print("[dim]bye[/]")
         await self.supervisor.shutdown_all()
 
