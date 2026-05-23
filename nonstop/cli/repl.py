@@ -30,7 +30,9 @@ from nonstop.personalities import list_presets
 from nonstop.board import create_ticket, move_ticket, list_tickets, add_comment
 from nonstop.runtime.teams import list_teams
 from nonstop.runtime.orchestrator import Orchestrator
-from nonstop import updater
+from nonstop import updater, sessions
+import time
+from rich.markdown import Markdown
 
 
 try:
@@ -100,9 +102,14 @@ class NonStopREPL:
         self._stream_owner: str | None = None
         self._stream_buffers: dict[str, list[str]] = defaultdict(list)
         self._stream_order: deque[str] = deque()
+        self._stream_started_at: float | None = None
+
+        # Track when each agent started thinking (drives the toolbar timer).
+        self._busy_since: dict[str, float] = {}
 
         # Update state — populated by the background check.
         self._update_available: dict | None = None
+        self._resumed_turns: int = 0
 
         self.commands = CommandRegistry()
         self._register_commands()
@@ -113,6 +120,15 @@ class NonStopREPL:
         def _(event):
             event.current_buffer.insert_text("\n")
 
+        @kb.add("c-l")
+        def _(event):
+            event.app.renderer.clear()
+
+        @kb.add("c-c")
+        def _(event):
+            # Clear the input buffer. (Ctrl+D exits, Ctrl+L clears screen.)
+            event.current_buffer.reset()
+
         self.session = PromptSession(
             history=FileHistory(os.path.expanduser("~/.nonstop_history")),
             style=STYLE,
@@ -120,7 +136,7 @@ class NonStopREPL:
             complete_while_typing=True,
             key_bindings=kb,
             bottom_toolbar=self._toolbar,
-            refresh_interval=0.5,
+            refresh_interval=0.1,
         )
 
     def _register_commands(self):
@@ -140,6 +156,7 @@ class NonStopREPL:
             Command("presets", self._cmd_presets, "List personality presets", []),
             Command("status", self._cmd_status, "System status", ["st"]),
             Command("update", self._cmd_update, "Check for + apply updates", ["up"]),
+            Command("sessions", self._cmd_sessions, "Show/clear saved conversation: /sessions [clear]", []),
             Command("clear", self._cmd_clear, "Clear screen", ["c"]),
             Command("quit", self._cmd_quit, "Exit", ["q", "exit"]),
         ]
@@ -164,9 +181,14 @@ class NonStopREPL:
         self.console.print(text, end="", highlight=False)
 
     def _on_stream_token(self, name: str, token: str, accumulated: str):
+        # Track timing for the toolbar.
+        if name not in self._busy_since:
+            self._busy_since[name] = time.time()
+
         # If nobody owns the line, this agent takes it.
         if self._stream_owner is None:
             self._stream_owner = name
+            self._stream_started_at = time.time()
             self._print_agent_header(name)
             text = token.replace("\n", "\n[dim]  │[/] ")
             self.console.print(text, end="", highlight=False)
@@ -184,17 +206,22 @@ class NonStopREPL:
         self._stream_buffers[name].append(token)
 
     def _on_stream_end(self, name: str, full_response: str):
+        self._busy_since.pop(name, None)
+        # Persist this agent turn.
+        try:
+            sessions.save_turn(self.projects.active_name, "assistant", name, full_response)
+        except Exception:
+            pass
+
         if self._stream_owner == name:
             self.console.print()  # newline closes the agent line
+            self._render_markdown_summary(name, full_response)
             self._stream_owner = None
-            # Promote the next buffered agent (if any).
             while self._stream_order:
                 nxt = self._stream_order.popleft()
                 if nxt in self._stream_buffers and self._stream_buffers[nxt]:
                     self._stream_owner = nxt
                     self._flush_buffer(nxt)
-                    # The promoted agent may still be producing; if its stream
-                    # already ended while buffered, close the line.
                     agent = self.supervisor.get_agent(nxt)
                     if agent is None or not agent.is_busy:
                         self.console.print()
@@ -202,11 +229,28 @@ class NonStopREPL:
                         continue
                     break
         else:
-            # Owner was someone else — just dump this agent's buffer cleanly.
             self._flush_buffer(name)
             if self._stream_owner is None or self._stream_owner == name:
                 self.console.print()
+                self._render_markdown_summary(name, full_response)
                 self._stream_owner = None
+
+    def _render_markdown_summary(self, name: str, full_response: str):
+        """If the response has markdown features (code blocks, lists, headings),
+        render a clean markdown version under the raw stream so code is
+        syntax-highlighted and structure is readable."""
+        text = full_response.strip()
+        has_md = (
+            "```" in text
+            or any(line.startswith(("#", "- ", "* ", "1.")) for line in text.splitlines())
+        )
+        if not has_md:
+            return
+        try:
+            self.console.print()
+            self.console.print(Markdown(text), justify="left")
+        except Exception:
+            pass
 
     # ── UI chrome ────────────────────────────────────────────────────
 
@@ -220,6 +264,9 @@ class NonStopREPL:
             Text(""),
             Text.from_markup(f"  [dim]project:[/] {proj}    [dim]cwd:[/] {cwd}"),
         ]
+        if self._resumed_turns:
+            lines.append(Text(""))
+            lines.append(Text.from_markup(f"  [#888888]↻ resumed last conversation ({self._resumed_turns} turns)[/]"))
         if self._update_available:
             short = self._update_available.get("short", "")
             lines.append(Text(""))
@@ -269,16 +316,28 @@ class NonStopREPL:
         ))
         self.console.print()
 
+    SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
     def _toolbar(self):
         proj = self.projects.active_name
         agents = self.supervisor.list_agents(project_name=proj)
         busy = sum(1 for a in agents if a["busy"])
         model_short = self._default_model.split("/")[-1]
 
+        # Spinner + elapsed for the longest-running active agent.
+        if self._busy_since:
+            oldest = min(self._busy_since.values())
+            elapsed = int(time.time() - oldest)
+            frame = self.SPINNER_FRAMES[int(time.time() * 10) % len(self.SPINNER_FRAMES)]
+            busy_bit = f" \x1b[38;5;208m{frame} thinking {elapsed}s\x1b[0m"
+        elif busy:
+            busy_bit = " \x1b[38;5;208m✻ working\x1b[0m"
+        else:
+            busy_bit = ""
+
         left_parts = [
             f"\x1b[1m{proj}\x1b[0m",
-            f"{len(agents)} agent{'s' if len(agents) != 1 else ''}"
-            + (f" \x1b[38;5;208m({busy} ✻ thinking)\x1b[0m" if busy else ""),
+            f"{len(agents)} agent{'s' if len(agents) != 1 else ''}{busy_bit}",
             f"\x1b[2m{model_short}\x1b[0m",
         ]
         if self._update_available:
@@ -525,6 +584,17 @@ class NonStopREPL:
             return f"[green]✓[/] {msg}"
         return f"[red]update failed:[/] {escape(msg)}"
 
+    async def _cmd_sessions(self, args: str) -> str:
+        proj = self.projects.active_name
+        if args.strip() == "clear":
+            sessions.clear(proj)
+            return f"[dim]cleared session log for[/] {proj}"
+        s = sessions.stats(proj)
+        if not s["exists"]:
+            return f"[dim]no saved session for[/] {proj}"
+        kb = s["size"] // 1024
+        return f"[dim]session for[/] {proj}: {s['turns']} turns, {kb} KB [dim]· /sessions clear to wipe[/]"
+
     async def _cmd_clear(self, args: str) -> str:
         self.console.clear()
         return ""
@@ -565,6 +635,25 @@ class NonStopREPL:
                 on_token=self._on_stream_token,
                 on_end=self._on_stream_end,
             )
+            self._resume_into(result)
+
+    def _resume_into(self, agent):
+        """Replay recent turns from the session log into an agent's context."""
+        proj = self.projects.active_name
+        past = sessions.load_recent(proj, limit=40)
+        if not past:
+            return
+        for turn in past:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if not content:
+                continue
+            if role == "assistant":
+                agent.messages.append({"role": "assistant", "content": content})
+            else:
+                agent.messages.append({"role": "user", "content": content})
+        self._resumed_turns = len(past)
+
 
     async def run(self):
         # Kick off the update check before drawing the banner so we know
@@ -608,10 +697,13 @@ class NonStopREPL:
     async def _handle_input(self, text: str):
         proj = self.projects.active
         if not proj.agents:
-            # Shouldn't happen — default agent is spawned at startup — but
-            # if every agent was killed, re-spawn the default rather than
-            # leaving the user stuck.
             await self._ensure_default_agent()
+
+        # Persist the user's turn before sending it to anyone.
+        try:
+            sessions.save_turn(self.projects.active_name, "user", "", text)
+        except Exception:
+            pass
 
         for agent in proj.agents.values():
             if not agent.is_busy:
