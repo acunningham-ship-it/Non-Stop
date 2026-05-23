@@ -156,12 +156,13 @@ class Agent:
         try:
             # Stream the response
             accumulated = ""
-            async for token in self.provider.chat(
+            stream = await self.provider.chat(
                 messages=self.messages,
                 model=self.personality.model,
                 temperature=self.personality.temperature,
                 stream=True,
-            ):
+            )
+            async for token in stream:
                 accumulated += token
                 if self._on_stream_token:
                     self._on_stream_token(self.name, token, accumulated)
